@@ -215,14 +215,14 @@ class DiscordChecker:
         
         return filename
 
-# ============= دوال بوت التيليجرام =============
+# ============= دوال بوت التيليجرام - نسخة محسنة =============
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     is_admin_user = is_admin(user_id)
     
     welcome_msg = (
-        "🤖 *Discord Account Checker Bot*\n"
+        "🤖 *Discord Account Checker Bot v2.0*\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
     )
     
@@ -251,7 +251,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(welcome_msg, parse_mode='Markdown')
 
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """معالجة الملف المرسل - نسخة محسنة"""
+    """معالجة الملف المرسل - نسخة محسنة جداً"""
     user_id = update.effective_user.id
     
     # تسجيل المستخدم
@@ -260,80 +260,136 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.bot_data['users'].add(user_id)
     
     # رسالة مؤقتة
-    status_msg = await update.message.reply_text("📥 *جاري تحميل الملف...*", parse_mode='Markdown')
+    status_msg = await update.message.reply_text("📥 *جاري معالجة الملف...*", parse_mode='Markdown')
     
     try:
         # الحصول على الملف
         document = update.message.document
         
+        # التحقق من وجود الملف
+        if not document:
+            await status_msg.edit_text("❌ *لم يتم العثور على ملف!*", parse_mode='Markdown')
+            return
+        
         # التحقق من نوع الملف
-        if not document.file_name.endswith(('.txt', '.csv')):
+        file_name = document.file_name or "unknown.txt"
+        if not file_name.lower().endswith(('.txt', '.csv')):
             await status_msg.edit_text(
-                "❌ *نوع الملف غير مدعوم!*\n"
-                "📝 يرجى إرسال ملف `.txt` أو `.csv`",
+                f"❌ *نوع الملف غير مدعوم!*\n"
+                f"📝 الملف المرسل: `{file_name}`\n"
+                f"✅ المدعوم: `.txt`, `.csv`",
                 parse_mode='Markdown'
             )
             return
         
-        # تحميل الملف بطريقة آمنة
-        file = await context.bot.get_file(document.file_id)
+        # التحقق من حجم الملف
+        file_size = document.file_size or 0
+        max_size = 10 * 1024 * 1024  # 10 MB
+        
+        if file_size > max_size:
+            await status_msg.edit_text(
+                f"❌ *الملف كبير جداً!*\n"
+                f"📊 حجم الملف: `{file_size / 1024 / 1024:.1f} MB`\n"
+                f"📊 الحد الأقصى: `10 MB`",
+                parse_mode='Markdown'
+            )
+            return
+        
+        if file_size == 0:
+            await status_msg.edit_text("❌ *الملف فارغ!*", parse_mode='Markdown')
+            return
+        
+        # طريقة جديدة لتحميل الملف - باستخدام file_id مباشرة
+        await status_msg.edit_text(f"📥 *جاري تحميل الملف...*\n📊 الحجم: `{file_size / 1024:.1f} KB`", parse_mode='Markdown')
         
         # إنشاء اسم ملف مؤقت
         temp_filename = f"accounts_{user_id}_{int(time.time())}.txt"
         
-        # تحميل الملف
-        await file.download_to_drive(temp_filename)
-        
-        # التحقق من حجم الملف
-        file_size = os.path.getsize(temp_filename)
-        if file_size == 0:
-            os.remove(temp_filename)
-            await status_msg.edit_text("❌ *الملف فارغ!*", parse_mode='Markdown')
-            return
-        
-        if file_size > 10 * 1024 * 1024:  # 10 MB
-            os.remove(temp_filename)
-            await status_msg.edit_text("❌ *الملف كبير جداً! (الحد الأقصى 10 ميجابايت)*", parse_mode='Markdown')
-            return
+        try:
+            # المحاولة الأولى: استخدام download_to_drive
+            file = await context.bot.get_file(document.file_id)
+            await file.download_to_drive(temp_filename)
+            
+            # التحقق من أن الملف تم تحميله
+            if not os.path.exists(temp_filename) or os.path.getsize(temp_filename) == 0:
+                raise Exception("File download failed or empty")
+                
+        except Exception as download_error:
+            # إذا فشل التحميل، جرب طريقة بديلة
+            await status_msg.edit_text("🔄 *جاري المحاولة بطريقة بديلة...*", parse_mode='Markdown')
+            
+            # استخدام رابط مباشر
+            file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{document.file_id}"
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.get(file_url) as response:
+                    if response.status == 200:
+                        content = await response.read()
+                        with open(temp_filename, 'wb') as f:
+                            f.write(content)
+                    else:
+                        raise Exception(f"Failed to download: {response.status}")
         
         # قراءة الملف
+        await status_msg.edit_text("📖 *جاري قراءة الملف...*", parse_mode='Markdown')
+        
         with open(temp_filename, 'r', encoding='utf-8', errors='ignore') as f:
             content = f.read()
         
         # حذف الملف المؤقت
-        os.remove(temp_filename)
+        try:
+            os.remove(temp_filename)
+        except:
+            pass
         
-        # استخراج الحسابات
+        # استخراج الحسابات - دعم عدة صيغ
         accounts = []
         lines = content.split('\n')
-        for line in lines:
+        invalid_lines = []
+        
+        for line_num, line in enumerate(lines, 1):
             line = line.strip()
-            # دعم عدة صيغ: email:pass أو email|pass أو email,pass
-            if ':' in line and not line.startswith('#'):
+            if not line or line.startswith('#'):
+                continue
+            
+            # محاولة استخراج email:password
+            email = None
+            password = None
+            
+            # الصيغة 1: email:password
+            if ':' in line:
                 parts = line.split(':', 1)
                 if len(parts) == 2:
                     email = parts[0].strip()
                     password = parts[1].strip()
-                    if email and password and '@' in email:
-                        accounts.append((email, password))
-            elif '|' in line and not line.startswith('#'):
+            
+            # الصيغة 2: email|password
+            elif '|' in line:
                 parts = line.split('|', 1)
                 if len(parts) == 2:
                     email = parts[0].strip()
                     password = parts[1].strip()
-                    if email and password and '@' in email:
-                        accounts.append((email, password))
+            
+            # التحقق من صحة الإيميل
+            if email and password and '@' in email and len(password) >= 4:
+                accounts.append((email, password))
+            else:
+                if line:
+                    invalid_lines.append(f"Line {line_num}: {line[:50]}...")
         
         if not accounts:
-            await status_msg.edit_text(
-                "❌ *لم يتم العثور على حسابات صالحة في الملف!*\n\n"
-                "📝 الصيغة المدعومة: `email:password`\n"
-                "📌 كل حساب في سطر منفصل",
-                parse_mode='Markdown'
-            )
+            error_msg = "❌ *لم يتم العثور على حسابات صالحة في الملف!*\n\n"
+            error_msg += "📝 الصيغة المدعومة: `email:password`\n"
+            error_msg += "📌 كل حساب في سطر منفصل\n\n"
+            
+            if invalid_lines:
+                error_msg += f"⚠️ عدد الأسطر غير الصالحة: `{len(invalid_lines)}`\n"
+                error_msg += f"مثال: `{invalid_lines[0]}`"
+            
+            await status_msg.edit_text(error_msg, parse_mode='Markdown')
             return
         
-        # تحديث رسالة الحالة
+        # تحديث رسالة البداية
         await status_msg.edit_text(
             f"🚀 *بدأت عملية الفحص!*\n\n"
             f"📊 عدد الحسابات: `{len(accounts)}`\n"
@@ -391,16 +447,26 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(summary, parse_mode='Markdown')
         
         # إرسال الملف
-        with open(results_file, 'rb') as f:
-            await update.message.reply_document(
-                document=f,
-                filename=os.path.basename(results_file),
-                caption="📄 *ملف النتائج الكامل*\n✅ صالح | ❌ غير صالح",
+        try:
+            with open(results_file, 'rb') as f:
+                await update.message.reply_document(
+                    document=f,
+                    filename=os.path.basename(results_file),
+                    caption="📄 *ملف النتائج الكامل*\n✅ صالح | ❌ غير صالح",
+                    parse_mode='Markdown'
+                )
+        except Exception as send_error:
+            await update.message.reply_text(
+                f"⚠️ *تم الفحص ولكن حدث خطأ في إرسال الملف*\n"
+                f"❌ الخطأ: `{str(send_error)[:100]}`",
                 parse_mode='Markdown'
             )
         
         # حذف الملف المؤقت
-        os.remove(results_file)
+        try:
+            os.remove(results_file)
+        except:
+            pass
         
         # إشعار للأدمن
         for admin_id in ADMIN_IDS:
@@ -421,10 +487,11 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await status_msg.edit_text(
             f"❌ *حدث خطأ:*\n"
             f"`{error_msg[:200]}`\n\n"
-            f"💡 تأكد من:\n"
-            f"• صحة الملف\n"
-            f"• وجود حسابات بالصيغة الصحيحة\n"
-            f"• إعادة المحاولة",
+            f"💡 *نصائح:*\n"
+            f"• تأكد من صحة الملف\n"
+            f"• استخدم صيغة `email:password`\n"
+            f"• أعد إرسال الملف مرة أخرى\n"
+            f"• إذا استمرت المشكلة، أرسل ملفاً أصغر",
             parse_mode='Markdown'
         )
         print(f"Error in handle_file: {e}")
@@ -594,7 +661,7 @@ def main():
     app.add_handler(CommandHandler("broadcast", broadcast))
     app.add_handler(CommandHandler("users", users_list))
     
-    # معالجة الملفات
+    # معالجة الملفات - مع فلتر إضافي
     app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
     
     # معالج الأخطاء
@@ -602,6 +669,7 @@ def main():
     
     print("🤖 Bot is running...")
     print(f"👑 Admins: {ADMIN_IDS}")
+    print("📤 أرسل ملف txt يحتوي على الحسابات")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
