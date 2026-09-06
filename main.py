@@ -14,7 +14,7 @@ import aiohttp
 import aiofiles
 
 # ============= إعدادات البوت =============
-BOT_TOKEN = "8818745155:AAFNGU9SIbkKxzcZN62khYE-zAqiUDEUaSw"  # ضع توكن البوت هنا
+BOT_TOKEN = "8818745155:AAFNGU9SIbkKxzcZN62khYE-zAqiUDEUaSw"
 ADMIN_IDS = [8703458182]  # ضع معرفات الأدمن هنا
 
 # ============= القيم الثابتة =============
@@ -215,14 +215,14 @@ class DiscordChecker:
         
         return filename
 
-# ============= دوال بوت التيليجرام - نسخة محسنة =============
+# ============= دوال بوت التيليجرام =============
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     is_admin_user = is_admin(user_id)
     
     welcome_msg = (
-        "🤖 *Discord Account Checker Bot v2.0*\n"
+        "🤖 *Discord Account Checker Bot*\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
     )
     
@@ -251,7 +251,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(welcome_msg, parse_mode='Markdown')
 
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """معالجة الملف المرسل - نسخة محسنة جداً"""
+    """معالجة الملف المرسل - الحل النهائي لمشكلة 404"""
     user_id = update.effective_user.id
     
     # تسجيل المستخدم
@@ -263,10 +263,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = await update.message.reply_text("📥 *جاري معالجة الملف...*", parse_mode='Markdown')
     
     try:
-        # الحصول على الملف
         document = update.message.document
-        
-        # التحقق من وجود الملف
         if not document:
             await status_msg.edit_text("❌ *لم يتم العثور على ملف!*", parse_mode='Markdown')
             return
@@ -285,7 +282,6 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # التحقق من حجم الملف
         file_size = document.file_size or 0
         max_size = 10 * 1024 * 1024  # 10 MB
-        
         if file_size > max_size:
             await status_msg.edit_text(
                 f"❌ *الملف كبير جداً!*\n"
@@ -299,36 +295,36 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await status_msg.edit_text("❌ *الملف فارغ!*", parse_mode='Markdown')
             return
         
-        # طريقة جديدة لتحميل الملف - باستخدام file_id مباشرة
+        # ✅ **الحل الجذري: استخدام file_path الصحيح**
         await status_msg.edit_text(f"📥 *جاري تحميل الملف...*\n📊 الحجم: `{file_size / 1024:.1f} KB`", parse_mode='Markdown')
+        
+        # الحصول على كائن الملف
+        file = await context.bot.get_file(document.file_id)
+        
+        # الحصول على المسار الصحيح للملف
+        file_path = file.file_path  # هذا هو المفتاح!
+        
+        # إنشاء الرابط الصحيح لتحميل الملف
+        file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
         
         # إنشاء اسم ملف مؤقت
         temp_filename = f"accounts_{user_id}_{int(time.time())}.txt"
         
-        try:
-            # المحاولة الأولى: استخدام download_to_drive
-            file = await context.bot.get_file(document.file_id)
-            await file.download_to_drive(temp_filename)
-            
-            # التحقق من أن الملف تم تحميله
-            if not os.path.exists(temp_filename) or os.path.getsize(temp_filename) == 0:
-                raise Exception("File download failed or empty")
-                
-        except Exception as download_error:
-            # إذا فشل التحميل، جرب طريقة بديلة
-            await status_msg.edit_text("🔄 *جاري المحاولة بطريقة بديلة...*", parse_mode='Markdown')
-            
-            # استخدام رابط مباشر
-            file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{document.file_id}"
-            
-            async with aiohttp.ClientSession() as session:
-                async with session.get(file_url) as response:
-                    if response.status == 200:
-                        content = await response.read()
-                        with open(temp_filename, 'wb') as f:
-                            f.write(content)
-                    else:
-                        raise Exception(f"Failed to download: {response.status}")
+        # تحميل الملف باستخدام aiohttp
+        async with aiohttp.ClientSession() as session:
+            async with session.get(file_url) as response:
+                if response.status == 200:
+                    content = await response.read()
+                    with open(temp_filename, 'wb') as f:
+                        f.write(content)
+                else:
+                    # إذا فشل الرابط، جرب download_to_drive كحل بديل
+                    await status_msg.edit_text("🔄 *المحاولة بطريقة بديلة...*", parse_mode='Markdown')
+                    await file.download_to_drive(temp_filename)
+        
+        # التحقق من وجود الملف بعد التحميل
+        if not os.path.exists(temp_filename) or os.path.getsize(temp_filename) == 0:
+            raise Exception("فشل تحميل الملف أو الملف فارغ")
         
         # قراءة الملف
         await status_msg.edit_text("📖 *جاري قراءة الملف...*", parse_mode='Markdown')
@@ -342,28 +338,25 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             pass
         
-        # استخراج الحسابات - دعم عدة صيغ
+        # استخراج الحسابات
         accounts = []
         lines = content.split('\n')
-        invalid_lines = []
+        invalid_lines = 0
         
-        for line_num, line in enumerate(lines, 1):
+        for line in lines:
             line = line.strip()
             if not line or line.startswith('#'):
                 continue
             
-            # محاولة استخراج email:password
             email = None
             password = None
             
-            # الصيغة 1: email:password
+            # دعم الصيغ المختلفة
             if ':' in line:
                 parts = line.split(':', 1)
                 if len(parts) == 2:
                     email = parts[0].strip()
                     password = parts[1].strip()
-            
-            # الصيغة 2: email|password
             elif '|' in line:
                 parts = line.split('|', 1)
                 if len(parts) == 2:
@@ -374,22 +367,18 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if email and password and '@' in email and len(password) >= 4:
                 accounts.append((email, password))
             else:
-                if line:
-                    invalid_lines.append(f"Line {line_num}: {line[:50]}...")
+                invalid_lines += 1
         
         if not accounts:
             error_msg = "❌ *لم يتم العثور على حسابات صالحة في الملف!*\n\n"
             error_msg += "📝 الصيغة المدعومة: `email:password`\n"
             error_msg += "📌 كل حساب في سطر منفصل\n\n"
-            
-            if invalid_lines:
-                error_msg += f"⚠️ عدد الأسطر غير الصالحة: `{len(invalid_lines)}`\n"
-                error_msg += f"مثال: `{invalid_lines[0]}`"
+            error_msg += f"⚠️ عدد الأسطر غير الصالحة: `{invalid_lines}`"
             
             await status_msg.edit_text(error_msg, parse_mode='Markdown')
             return
         
-        # تحديث رسالة البداية
+        # بدء الفحص
         await status_msg.edit_text(
             f"🚀 *بدأت عملية الفحص!*\n\n"
             f"📊 عدد الحسابات: `{len(accounts)}`\n"
@@ -397,7 +386,6 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='Markdown'
         )
         
-        # بدء الفحص
         checker = DiscordChecker()
         last_update_time = 0
         
@@ -424,7 +412,6 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 await update.message.reply_text(progress_msg, parse_mode='Markdown')
         
-        # تنفيذ الفحص
         await checker.process_accounts(accounts, send_progress)
         
         # توليد ملف النتائج
@@ -447,18 +434,11 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(summary, parse_mode='Markdown')
         
         # إرسال الملف
-        try:
-            with open(results_file, 'rb') as f:
-                await update.message.reply_document(
-                    document=f,
-                    filename=os.path.basename(results_file),
-                    caption="📄 *ملف النتائج الكامل*\n✅ صالح | ❌ غير صالح",
-                    parse_mode='Markdown'
-                )
-        except Exception as send_error:
-            await update.message.reply_text(
-                f"⚠️ *تم الفحص ولكن حدث خطأ في إرسال الملف*\n"
-                f"❌ الخطأ: `{str(send_error)[:100]}`",
+        with open(results_file, 'rb') as f:
+            await update.message.reply_document(
+                document=f,
+                filename=os.path.basename(results_file),
+                caption="📄 *ملف النتائج الكامل*\n✅ صالح | ❌ غير صالح",
                 parse_mode='Markdown'
             )
         
@@ -490,8 +470,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💡 *نصائح:*\n"
             f"• تأكد من صحة الملف\n"
             f"• استخدم صيغة `email:password`\n"
-            f"• أعد إرسال الملف مرة أخرى\n"
-            f"• إذا استمرت المشكلة، أرسل ملفاً أصغر",
+            f"• أعد إرسال الملف مرة أخرى",
             parse_mode='Markdown'
         )
         print(f"Error in handle_file: {e}")
@@ -661,7 +640,7 @@ def main():
     app.add_handler(CommandHandler("broadcast", broadcast))
     app.add_handler(CommandHandler("users", users_list))
     
-    # معالجة الملفات - مع فلتر إضافي
+    # معالجة الملفات
     app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
     
     # معالج الأخطاء
